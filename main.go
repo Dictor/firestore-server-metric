@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -19,14 +20,17 @@ import (
 type Metric struct {
 	Timestamp   time.Time `json:"timestamp"`
 	HostName    string    `json:"hostname"`
-	Uptime      uint64    `json:"uptime"`
+	Uptime      uint32    `json:"uptime"`
 	CpuLoad     float64   `json:"cpu_load"`
 	LocalIP     string    `json:"local_ip"`
 	PublicIP    string    `json:"public_ip"`
 	MemoryUsage float64   `json:"memory_usage"`
 }
 
-var Logger *logrus.Logger
+var (
+	Logger   *logrus.Logger
+	hostName string
+)
 
 func main() {
 	var (
@@ -41,16 +45,23 @@ func main() {
 
 	Logger = logrus.New()
 
+	if h, err := host.Info(); err != nil {
+		Logger.WithError(err).Fatal("fail to retrieve host name")
+	} else {
+		hostName = h.Hostname
+	}
+
 	ctx := context.Background()
 	client, err := firestore.NewClient(ctx, projectID, option.WithCredentialsFile(keyPath))
 	if err != nil {
 		Logger.WithError(err).Fatalln("fail to init firestore client")
 	}
-	doc := client.Doc("/metric/host")
+	collection := client.Collection(fmt.Sprintf("Metric/Host/%s", hostName))
 	metric := Metric{}
 
 	for {
 		fillMetric(&metric)
+		doc := collection.Doc(fmt.Sprintf("%d", time.Now().Unix()))
 		wr, err := doc.Create(ctx, metric)
 		if err != nil {
 			Logger.WithError(err).Error("fail to create record")
@@ -64,6 +75,7 @@ func fillMetric(m *Metric) {
 	m.Timestamp = time.Now()
 	m.PublicIP = getPublicIP()
 	m.LocalIP = getLocalIP()
+	m.HostName = hostName
 
 	if memory, err := mem.VirtualMemory(); err != nil {
 		Logger.WithError(err).Error("memory stat read error")
@@ -74,10 +86,8 @@ func fillMetric(m *Metric) {
 	if h, err := host.Info(); err != nil {
 		Logger.WithError(err).Error("host stat read error")
 		m.Uptime = 0
-		m.HostName = "error"
 	} else {
-		m.Uptime = h.Uptime
-		m.HostName = h.Hostname
+		m.Uptime = uint32(h.Uptime)
 	}
 	if a, err := load.Avg(); err != nil {
 		Logger.WithError(err).Error("cpu stat read error")
